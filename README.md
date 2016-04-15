@@ -1,4 +1,4 @@
-# s_xgboost
+# s_xgboost (Unfinished)
 
 近期阅读dmlc/xgboost的源码，被里面分布式相关的rabit和dmlc-core带得有点晕。所以着手把这些分布式代码清掉，试图还原成单机版使得代码更易读。过程中参考了xgboost最初版本v0.1。虽然xgboost v0.1也是单机版，但代码组织已经和现在最新的dmlc/xgboost有明显区别了。  
 
