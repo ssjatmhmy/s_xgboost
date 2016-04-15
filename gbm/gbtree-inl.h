@@ -1,0 +1,257 @@
+#ifndef XGBOOST_GBMBASE_H
+#define XGBOOST_GBMBASE_H
+
+#include <cstring>
+#include "gbm.h"
+#include "../data.h"
+//#include "../utils/xgboost_omp.h"
+#include "../utils/config.h"
+/*!
+ * \file xgboost_gbmbase.h
+ * \brief a base model class, 
+ *        that assembles the ensembles of booster together and do model update
+ *        this class can be used as base code to create booster variants 
+ *
+ *        The detailed implementation of boosters should start by using the class
+ *        provided by this file
+ *        
+ * \author Tianqi Chen: tianqi.tchen@gmail.com
+ */
+namespace xgboost {
+namespace gbm {
+/*!
+* \brief interface of gradient boosting model
+*/
+class GBTree {
+ public:
+  /*! \brief number of thread used */
+  GBTree(void) {}
+  /*! \brief destructor */
+  virtual ~GBTree(void) {
+    this->FreeSpace();
+  }
+  /*! 
+   * \brief set parameters from outside 
+   * \param name name of the parameter
+   * \param val  value of the parameter
+   */
+  inline void SetParam(const char *name, const char *val) {
+    if (!strncmp(name, "bst:", 4)) {
+      cfg.push_back(std::make_pair(std::string(name+4), std::string(val)));
+    }
+    if (!strcmp(name, "silent")) {
+      this->SetParam("bst:silent", val);
+    }
+    tparam.SetParam(name, val);
+    if (boosters.size() == 0) mparam.SetParam( name, val );
+  }
+  /*! 
+   * \brief save model to stream
+   * \param fo output stream
+   */
+  inline void SaveModel(utils::IStream &fo) const {
+    utils::Assert(mparam.num_boosters == (int)boosters.size());
+    fo.Write(&mparam, sizeof(ModelParam));
+    for (size_t i = 0; i < boosters.size(); ++i) {
+      boosters[i]->SaveModel(fo); 
+    }
+    if (booster_info.size() != 0) {
+      fo.Write(&booster_info[0], sizeof(int)*booster_info.size());
+    }
+    if (mparam.num_pbuffer != 0) {
+      fo.Write(&pred_buffer[0], pred_buffer.size()*sizeof(float));
+      fo.Write(&pred_counter[0], pred_counter.size()*sizeof(unsigned));
+    }
+  }
+  /*! 
+   * \brief load model from stream
+   * \param fi input stream
+   */
+  inline void LoadModel(utils::IStream &fi) {
+    if (boosters.size() != 0) this->FreeSpace();
+    //@todo
+  }
+  /*!
+  * \brief initialize the current data storage for model, if the model is used first time, call this function
+  */
+  inline void InitModel(void) {
+    pred_buffer.clear(); pred_counter.clear();
+    pred_buffer.resize(mparam.num_pbuffer, 0.0f);
+    pred_counter.resize(mparam.num_pbuffer, 0);
+    utils::Assert(mparam.num_boosters == 0);
+    utils::Assert(boosters.size() == 0);
+  }
+  /*!
+   * \brief initialize solver before training, called before training
+   * this function is reserved for solver to allocate necessary space and do other preparation 
+   */            
+  inline void InitTrainer(void) {
+    if (tparam.nthread != 0) {
+      omp_set_num_threads(tparam.nthread);
+    }
+    // make sure all the boosters get the latest parameters
+    for (size_t i = 0; i < this->boosters.size(); ++i) {
+      this->ConfigBooster(this->boosters[i]);
+    }
+  }
+  /*! 
+   * \brief do gradient boost training for one step, using the information given
+   *        Note: content of grad and hess can change after DoBoost
+   * \param grad first order gradient of each instance
+   * \param hess second order gradient of each instance
+   * \param feats features of each instance
+   * \param root_index pre-partitioned root index of each instance, 
+   *          root_index.size() can be 0 which indicates that no pre-partition involved
+   */
+  inline void DoBoost(std::vector<float> &grad,
+                      std::vector<float> &hess,
+                      const IFMatrix &feats,
+                      const std::vector<unsigned> &root_index) {
+    IGradBooster *bst = this->GetUpdateBooster();
+    bst->DoBoost(grad, hess, feats, root_index);
+  }
+  /*! 
+   * \brief predict values for given sparse feature vector
+   *   NOTE: in tree implementation, this is only OpenMP threadsafe, but not threadsafe
+   * \param feats feature matrix
+   * \param row_index  row index in the feature matrix
+   * \param buffer_index the buffer index of the current feature line, default -1 means no buffer assigned
+   * \param root_index root id of current instance, default = 0
+   * \return prediction 
+   */
+  inline float Predict(const FMatrixS &feats, bst_uint row_index, int buffer_index = -1, unsigned root_index = 0) {
+    size_t istart = 0;
+    float psum = 0.0f;
+
+    // load buffered results if any
+    if (mparam.do_reboost == 0 && buffer_index >= 0) {
+      utils::Assert( buffer_index < mparam.num_pbuffer, "buffer index exceed num_pbuffer" );
+      istart = this->pred_counter[buffer_index];
+      psum = this->pred_buffer[buffer_index];
+    }
+
+    for (size_t i = istart; i < this->boosters.size(); ++i) {
+      psum += this->boosters[i]->Predict(feats, row_index, root_index);
+    }                
+    // updated the buffered results
+    if (mparam.do_reboost == 0 && buffer_index >= 0) {
+      this->pred_counter[buffer_index] = static_cast<unsigned>(boosters.size());
+      this->pred_buffer[buffer_index] = psum;
+    }
+    return psum;
+  }
+            
+ protected:
+  /*! \brief free space of the model */
+  inline void FreeSpace(void) {
+    for (size_t i = 0; i < boosters.size(); ++i) {
+      delete boosters[i];
+    }
+    boosters.clear(); booster_info.clear(); mparam.num_boosters = 0; 
+  }  
+  /*! \brief configure a booster */
+  inline void ConfigBooster(IGradBooster *bst) {
+    for (size_t i = 0; i < cfg.size(); ++i) {
+      bst->SetParam(cfg[i].first.c_str(), cfg[i].second.c_str());
+    }
+  }
+  /*! 
+   * \brief get a booster to update 
+   * \return the booster created
+   */
+  inline IGradBooster *GetUpdateBooster(void) {
+    if (mparam.do_reboost == 0 || boosters.size() == 0) {
+      mparam.num_boosters += 1;
+      boosters.push_back(CreateBooster(mparam.booster_type));
+      booster_info.push_back(0);
+      this->ConfigBooster(boosters.back());
+      boosters.back()->InitModel();                    
+    } else {
+      this->ConfigBooster(boosters.back());
+    }
+    return boosters.back();
+  }
+ protected:
+  /*! \brief model parameters */
+  struct ModelParam {
+    /*! \brief number of boosters */
+    int num_boosters;
+    /*! \brief type of tree used */
+    int booster_type;
+    /*! \brief number of root: default 0, means single tree */
+    int num_roots;
+    /*! \brief number of features to be used by boosters */
+    int num_feature;
+    /*! \brief size of predicton buffer allocated for buffering boosting computation */
+    int num_pbuffer;
+    /*! 
+     * \brief whether we repeatly update a single booster each round: default 0
+     *        set to 1 for linear booster, so that regularization term can be considered
+     */
+    int do_reboost;
+    /*! \brief reserved parameters */
+    int reserved[32];
+    /*! \brief constructor */
+    ModelParam(void) {
+      num_boosters = 0; 
+      booster_type = 0;
+      num_roots = num_feature = 0;                    
+      do_reboost = 0;
+      num_pbuffer = 0;
+      memset(reserved, 0, sizeof(reserved));
+    }
+    /*! 
+     * \brief set parameters from outside 
+     * \param name name of the parameter
+     * \param val  value of the parameter
+     */
+    inline void SetParam(const char *name, const char *val) {
+      if (!strcmp("booster_type", name)) {
+        booster_type = atoi(val);
+        // linear boost automatically set do reboost
+        if (booster_type == 1) do_reboost = 1;
+      }
+      if (!strcmp("num_pbuffer", name)) num_pbuffer = atoi(val);
+      if (!strcmp("do_reboost", name)) do_reboost = atoi(val);
+      if (!strcmp("bst:num_roots", name)) num_roots = atoi(val);
+      if (!strcmp("bst:num_feature", name)) num_feature = atoi(val);
+    }
+  };
+  /*! \brief training parameters */
+  struct TrainParam {
+    /*! \brief number of OpenMP threads */
+    int nthread;
+    /*! \brief constructor */
+    TrainParam( void ) {
+      nthread = 1;
+    }
+    /*! 
+     * \brief set parameters from outside 
+     * \param name name of the parameter
+     * \param val  value of the parameter
+     */                
+    inline void SetParam(const char *name, const char *val) {
+      if (!strcmp("nthread", name)) nthread = atoi(val);
+    }
+  };
+ protected:
+  /*! \brief model parameters */ 
+  ModelParam mparam;
+  /*! \brief training parameters */ 
+  TrainParam tparam;
+ protected:
+  /*! \brief component boosters */ 
+  std::vector<IGradBooster*> boosters;
+  /*! \brief some information indicator of the booster, reserved */ 
+  std::vector<int> booster_info;
+  /*! \brief prediction buffer */ 
+  std::vector<float> pred_buffer;
+  /*! \brief prediction buffer counter, record the progress so fart of the buffer */ 
+  std::vector<unsigned> pred_counter;
+  // ----training fields----
+  // configurations for tree
+  std::vector< std::pair<std::string, std::string> > cfg;
+};
+}  // namespace gbm
+}  // namespace xgboost
+#endif
