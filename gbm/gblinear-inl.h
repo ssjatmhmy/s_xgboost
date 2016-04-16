@@ -39,13 +39,14 @@ class LinearBooster : public IGradBooster {
                        std::vector<float> &hess,
                        const IFMatrix &fmat,
                        const std::vector<unsigned> &root_index) {
-    printf("gblinear DoBoost\n");
+    utils::Assert(grad.size() < UINT_MAX, "number of instance exceed what we can handle");
+    this->UpdateWeights(grad, hess, fmat);
   }
   inline float Predict(const IFMatrix &fmat, bst_uint ridx, unsigned root_index) {
     float sum = model.bias();
-    //for (IFMatrix::RowIter it = fmat.GetRow(ridx); it.Next(); ) { 
-    //  sum += model.weight[it.findex()] * it.fvalue();
-    //}
+    for (IFMatrix::RowIter it = fmat.GetRow(ridx); it.Next(); ) { 
+      sum += model.weight[it.findex()] * it.fvalue();
+    }
     return sum;
   }
  
@@ -76,6 +77,20 @@ class LinearBooster : public IGradBooster {
       if (!strcmp("reg_lambda", name)) reg_lambda = (float)atof(val);
       if (!strcmp("reg_alpha", name)) reg_alpha = (float)atof(val);
       if (!strcmp("reg_lambda_bias", name)) reg_lambda_bias = (float)atof(val);
+    }
+    // given original weight calculate delta 
+    inline double CalcDelta( double sum_grad, double sum_hess, double w ){
+      if( sum_hess < 1e-5f ) return 0.0f;
+      double tmp = w - ( sum_grad + reg_lambda*w )/( sum_hess + reg_lambda );
+      if ( tmp >=0 ){
+          return std::max(-( sum_grad + reg_lambda*w + reg_alpha)/(sum_hess+reg_lambda),-w);
+      }else{
+          return std::min(-( sum_grad + reg_lambda*w - reg_alpha)/(sum_hess+reg_lambda),-w);
+      }
+    }
+    // given original weight calculate delta bias
+    inline double CalcDeltaBias( double sum_grad, double sum_hess, double w ){
+      return - (sum_grad + reg_lambda_bias*w) / (sum_hess + reg_lambda_bias );
     }
   };  
   // model for linear booster
@@ -120,11 +135,50 @@ class LinearBooster : public IGradBooster {
       return weight.back();
     }
   };
- protected:
-  Model model;
-  ParamTrain param;
  private:
   int silent;
+ protected:
+  Model model;
+  ParamTrain param;  
+
+ protected:
+  // update weights, should work for any FMatrix
+  inline void UpdateWeights(std::vector<float> &grad,                       
+                            const std::vector<float> &hess,
+                            const IFMatrix &smat) {
+    {// optimize bias
+      double sum_grad = 0.0, sum_hess = 0.0;
+      for (size_t i = 0; i < grad.size(); ++i) {
+        sum_grad += grad[ i ]; sum_hess += hess[ i ];
+      }
+      // remove bias effect
+      double dw = param.learning_rate * param.CalcDeltaBias( sum_grad, sum_hess, model.bias() );
+      model.bias() += dw;
+      // update grad value 
+      for( size_t i = 0; i < grad.size(); i ++ ){
+        grad[ i ] += dw * hess[ i ];
+      }
+    }
+    // optimize weight
+    const unsigned nfeat= (unsigned)smat.NumCol();                           
+    for( unsigned i = 0; i < nfeat; i ++ ){
+      if( !smat.GetSortedCol( i ).Next() ) continue;
+      double sum_grad = 0.0, sum_hess = 0.0;
+      for(IFMatrix::ColIter it = smat.GetSortedCol(i); it.Next(); ){
+          const float v = it.fvalue();
+          sum_grad += grad[ it.rindex() ] * v;
+          sum_hess += hess[ it.rindex() ] * v * v;
+      }
+      float w = model.weight[ i ];
+      double dw = param.learning_rate * param.CalcDelta( sum_grad, sum_hess, w );
+      model.weight[ i ] += dw;
+      // update grad value 
+      for(IFMatrix::ColIter it = smat.GetSortedCol(i); it.Next(); ){
+          const float v = it.fvalue();
+          grad[ it.rindex() ] += hess[ it.rindex() ] * v * dw;
+      }
+    }                       
+  }
 };
 }  // namespace gbm
 }  // namespace xgboost

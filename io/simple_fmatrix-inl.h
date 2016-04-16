@@ -19,38 +19,6 @@ namespace xgboost{
  */        
 class FMatrixS: public IFMatrix {
  public:
-  /*! \brief one entry in a row */
-  struct REntry{
-    /*! \brief feature index */
-    bst_uint findex;
-    /*! \brief feature value */
-    bst_float fvalue;
-    /*! \brief constructor */
-    REntry(void) {}
-    /*! \brief constructor */
-    REntry(bst_uint findex, bst_float fvalue) : findex(findex), fvalue(fvalue) {}
-    inline static bool cmp_fvalue(const REntry &a, const REntry &b) {
-      return a.fvalue < b.fvalue;
-    }
-  };
-  /*! \brief row iterator */
-  struct RowIter {
-    const REntry *dptr_, *end_;
-    RowIter(const REntry* dptr, const REntry* end)
-        :dptr_(dptr), end_(end) {}
-    inline bool Next(void) {
-      if (dptr_ == end_) return false;
-      else {
-        ++ dptr_; return true;
-      }
-    }
-    inline bst_uint findex(void) const {
-      return dptr_->findex;
-    }
-    inline bst_float fvalue(void) const {
-      return dptr_->fvalue;
-    }
-  };
   /*!  \brief get number of rows */
   inline size_t NumRow(void) const {
     return row_ptr_.size() - 1;
@@ -87,6 +55,11 @@ class FMatrixS: public IFMatrix {
     utils::Assert(this->HaveColAccess(), 
                   " Can not get number of column, do not have access.");
     return col_ptr_.size() - 1;
+  }
+  /*!  \brief get col iterator*/
+  inline ColIter GetSortedCol(size_t cidx) const {
+    utils::Assert(!bst_debug || cidx < this->NumCol(), "col id exceed bound");
+    return ColIter( &col_data_[ col_ptr_[cidx] ] - 1, &col_data_[ col_ptr_[cidx+1] ] - 1 );
   }
   /*! \brief clear the storage */
   inline void Clear(void) {
