@@ -35,7 +35,7 @@ typedef learner::DMatrix DMatrix;
     this->InitData();
     this->InitLearner();
     if (task == "pred") {
-      //this->TaskPred();
+      this->TaskPred();
     } else {                  
       this->TaskTrain();
     }
@@ -125,7 +125,7 @@ typedef learner::DMatrix DMatrix;
       elapsed = (unsigned long)(time(NULL) - start); 
       if (!silent) printf("boosting round %d, %lu sec elapsed\n", i, elapsed);
       learner.UpdateOneIter(i);
-      //learner.EvalOneIter(i);
+      learner.EvalOneIter(i);
       if (save_period != 0 && (i+1) % save_period == 0) {
         this->SaveModel(i);
       }
@@ -143,6 +143,17 @@ typedef learner::DMatrix DMatrix;
       printf("\nupdating end, %lu sec in all\n", elapsed);
     }
   }  
+  inline void TaskPred(void) {
+    std::vector<float> preds;
+    if (!silent) printf("start prediction...\n");
+    learner.Predict(preds, data);
+    if (!silent) printf("writing prediction to %s\n", name_pred.c_str());
+    FILE *fo = utils::FopenCheck(name_pred.c_str(), "w");
+    for (size_t i = 0; i < preds.size(); ++i) {
+      fprintf(fo, "%f\n", preds[i]);
+    }
+    fclose(fo);                
+  }
   inline void SaveModel(const char *fname) const {
     utils::FileStream fo(utils::FopenCheck(fname, "wb"));
     learner.SaveModel(fo);

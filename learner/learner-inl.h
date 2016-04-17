@@ -129,7 +129,34 @@ class BoostLearner {
     std::vector<unsigned> root_index;
     base_gbm.DoBoost(grad_, hess_, train_->data, root_index);                
   }  
-  
+  /*! 
+   * \brief evaluate the model for specific iteration
+   * \param iter iteration number
+   * \param fo file to output log
+   */            
+  inline void EvalOneIter( int iter, FILE *fo = stderr ){
+    fprintf( fo, "[%d]", iter );
+    int buffer_offset = static_cast<int>( train_->Size() );
+    
+    for( size_t i = 0; i < evals_.size(); ++i ){
+      std::vector<float> &preds = this->eval_preds_[ i ];
+      this->PredictBuffer( preds, *evals_[i], buffer_offset);
+      evaluator_.Eval( fo, evname_[i].c_str(), preds, (*evals_[i]).labels );
+      buffer_offset += static_cast<int>( evals_[i]->Size() );
+    }
+    fprintf( fo,"\n" );
+  }
+  /*! \brief get prediction, without buffering */
+  inline void Predict(std::vector<float> &preds, const DMatrix &data) {
+    preds.resize(data.Size());
+
+    const unsigned ndata = static_cast<unsigned>(data.Size());
+    #pragma omp parallel for schedule(static)
+    for (unsigned j = 0; j < ndata; ++j) {
+      preds[j] = mparam.PredTransform
+            (mparam.base_score + base_gbm.Predict(data.data, j, -1));
+    }
+  }  
  protected:
   /*! \brief get the transformed predictions, given data */
   inline void PredictBuffer(std::vector<float> &preds, const DMatrix &data, unsigned buffer_offset) {
