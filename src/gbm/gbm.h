@@ -131,7 +131,7 @@ inline IGradBooster *CreateBooster(int booster_type);
 
 #include "gbm.h"
 #include "../utils/utils.h"
-//#include "tree/xgboost_tree.hpp"
+#include "../tree/tree.hpp"
 #include "./gblinear-inl.h"
 
 namespace xgboost {
@@ -145,8 +145,8 @@ namespace gbm {
 //template<typename FMatrix>
 inline IGradBooster *CreateBooster(int booster_type) {
   switch (booster_type) {
-    //case 0: return new RegTreeTrainer<FMatrix>();
-    case 0: return new LinearBooster();
+    case 0: return new RegTreeTrainer();
+    case 1: return new LinearBooster();
     default: utils::Error("unknown booster_type"); return NULL;
   }
 }

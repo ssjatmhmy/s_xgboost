@@ -42,7 +42,6 @@ class GBTree {
     if (!strcmp(name, "silent")) {
       this->SetParam("bst:silent", val);
     }
-    tparam.SetParam(name, val);
     if (boosters.size() == 0) mparam.SetParam( name, val );
   }
   /*! 
@@ -54,9 +53,6 @@ class GBTree {
     fo.Write(&mparam, sizeof(ModelParam));
     for (size_t i = 0; i < boosters.size(); ++i) {
       boosters[i]->SaveModel(fo); 
-    }
-    if (booster_info.size() != 0) {
-      fo.Write(&booster_info[0], sizeof(int)*booster_info.size());
     }
     if (mparam.num_pbuffer != 0) {
       fo.Write(&pred_buffer[0], pred_buffer.size()*sizeof(float));
@@ -74,12 +70,6 @@ class GBTree {
     for( size_t i = 0; i < boosters.size(); i ++ ){
       boosters[ i ] = CreateBooster( mparam.booster_type );
       boosters[ i ]->LoadModel( fi );
-    }
-    {// load info 
-      booster_info.resize( mparam.num_boosters );
-      if( mparam.num_boosters != 0 ){
-          utils::Assert( fi.Read( &booster_info[0], sizeof(int)*mparam.num_boosters ) != 0 );
-      }
     }
     if( mparam.num_pbuffer != 0 ){
         pred_buffer.resize ( mparam.num_pbuffer );
@@ -103,9 +93,6 @@ class GBTree {
    * this function is reserved for solver to allocate necessary space and do other preparation 
    */            
   inline void InitTrainer(void) {
-    if (tparam.nthread != 0) {
-      omp_set_num_threads(tparam.nthread);
-    }
     // make sure all the boosters get the latest parameters
     for (size_t i = 0; i < this->boosters.size(); ++i) {
       this->ConfigBooster(this->boosters[i]);
@@ -164,7 +151,7 @@ class GBTree {
     for (size_t i = 0; i < boosters.size(); ++i) {
       delete boosters[i];
     }
-    boosters.clear(); booster_info.clear(); mparam.num_boosters = 0; 
+    boosters.clear(); mparam.num_boosters = 0; 
   }  
   /*! \brief configure a booster */
   inline void ConfigBooster(IGradBooster *bst) {
@@ -180,7 +167,6 @@ class GBTree {
     if (mparam.do_reboost == 0 || boosters.size() == 0) {
       mparam.num_boosters += 1;
       boosters.push_back(CreateBooster(mparam.booster_type));
-      booster_info.push_back(0);
       this->ConfigBooster(boosters.back());
       boosters.back()->InitModel();                    
     } else {
@@ -197,8 +183,6 @@ class GBTree {
     int booster_type;
     /*! \brief number of root: default 0, means single tree */
     int num_roots;
-    /*! \brief number of features to be used by boosters */
-    int num_feature;
     /*! \brief size of predicton buffer allocated for buffering boosting computation */
     int num_pbuffer;
     /*! 
@@ -206,16 +190,13 @@ class GBTree {
      *        set to 1 for linear booster, so that regularization term can be considered
      */
     int do_reboost;
-    /*! \brief reserved parameters */
-    int reserved[32];
     /*! \brief constructor */
     ModelParam(void) {
       num_boosters = 0; 
-      booster_type = 0;
-      num_roots = num_feature = 0;                    
+      booster_type = 0;     
+      num_roots = 0;             
       do_reboost = 0;
       num_pbuffer = 0;
-      memset(reserved, 0, sizeof(reserved));
     }
     /*! 
      * \brief set parameters from outside 
@@ -231,36 +212,15 @@ class GBTree {
       if (!strcmp("num_pbuffer", name)) num_pbuffer = atoi(val);
       if (!strcmp("do_reboost", name)) do_reboost = atoi(val);
       if (!strcmp("bst:num_roots", name)) num_roots = atoi(val);
-      if (!strcmp("bst:num_feature", name)) num_feature = atoi(val);
     }
   };
-  /*! \brief training parameters */
-  struct TrainParam {
-    /*! \brief number of OpenMP threads */
-    int nthread;
-    /*! \brief constructor */
-    TrainParam( void ) {
-      nthread = 1;
-    }
-    /*! 
-     * \brief set parameters from outside 
-     * \param name name of the parameter
-     * \param val  value of the parameter
-     */                
-    inline void SetParam(const char *name, const char *val) {
-      if (!strcmp("nthread", name)) nthread = atoi(val);
-    }
-  };
+
  protected:
   /*! \brief model parameters */ 
   ModelParam mparam;
-  /*! \brief training parameters */ 
-  TrainParam tparam;
  protected:
   /*! \brief component boosters */ 
   std::vector<IGradBooster*> boosters;
-  /*! \brief some information indicator of the booster, reserved */ 
-  std::vector<int> booster_info;
   /*! \brief prediction buffer */ 
   std::vector<float> pred_buffer;
   /*! \brief prediction buffer counter, record the progress so fart of the buffer */ 
